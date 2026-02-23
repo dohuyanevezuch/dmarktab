@@ -14,8 +14,19 @@ const hasFavicon = ref(true)
 const dominantColor = ref('#666666')
 const secondaryColor = ref(null)
 const isLoading = ref(true)
+const childCount = ref(0)
 
 const getCustomFavicon = () => props.customFavicons[props.bookmark.id] || null
+
+const getChildCount = async () => {
+  if (!props.isFolder || !props.bookmark.id) return 0
+  try {
+    const children = await browser.bookmarks.getChildren(props.bookmark.id)
+    return children.length
+  } catch (e) {
+    return 0
+  }
+}
 
 const getFaviconColors = async (url) => {
   if (!url) return { primary: props.theme.accent, secondary: props.theme.primary }
@@ -95,6 +106,8 @@ const getFavicon = async () => {
     hasFavicon.value = false
     dominantColor.value = props.theme.accent
     secondaryColor.value = null
+    // Получаем количество дочерних элементов для папки
+    childCount.value = await getChildCount()
     isLoading.value = false
     return
   }
@@ -262,6 +275,11 @@ onMounted(getFavicon)
       </svg>
     </div>
     <span class="button-text">{{ bookmark.title }}</span>
+    
+    <!-- Счетчик элементов для папок -->
+    <span v-if="isFolder && childCount > 0" class="folder-count-badge">
+      {{ childCount }}
+    </span>
   </button>
 </template>
 
@@ -349,5 +367,29 @@ onMounted(getFavicon)
   flex: 1;
   text-align: left;
   min-width: 0;
+}
+
+/* Стили для бейджа счетчика папок */
+.folder-count-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  /* background: var(--theme-accent, #a855f7); */
+  color: var(--theme-accent);
+  font-size: 11px;
+  font-weight: 600;
+  margin-left: 4px;
+  flex-shrink: 0;
+  /* box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); */
+  transition: all 0.3s ease;
+}
+
+.bookmark-button:hover .folder-count-badge {
+  transform: scale(1.1);
+  /* box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); */
 }
 </style>

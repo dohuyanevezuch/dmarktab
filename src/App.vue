@@ -50,7 +50,9 @@ const editModal = ref({
   parentId: '',
   index: 0,
   siblings: [],
-  allFolders: []
+  allFolders: [],
+  expandedFolders: new Set(), // Для отслеживания развернутых папок
+  targetFolderChildren: [] // Дочерние элементы выбранной папки
 })
 
 const showSettings = ref(false)
@@ -284,6 +286,72 @@ const copyBookmarkUrl = () => {
   }
 }
 
+// Получение видимых папок с учетом свернутых
+const getVisibleFolders = computed(() => {
+  if (!editModal.value.allFolders) return []
+  
+  const visible = []
+  let skipDepth = -1
+  
+  for (const folder of editModal.value.allFolders) {
+    // Если мы внутри свернутой папки, пропускаем
+    if (skipDepth >= 0 && folder.depth > skipDepth) {
+      continue
+    }
+    skipDepth = -1
+    
+    visible.push(folder)
+    
+    // Если папка свернута, запоминаем глубину для пропуска детей
+    if (!editModal.value.expandedFolders.has(folder.id)) {
+      skipDepth = folder.depth
+    }
+  }
+  
+  return visible
+})
+
+// Переключение сворачивания папки
+const toggleFolderExpand = (folderId) => {
+  if (editModal.value.expandedFolders.has(folderId)) {
+    editModal.value.expandedFolders.delete(folderId)
+  } else {
+    editModal.value.expandedFolders.add(folderId)
+  }
+}
+
+// Проверка, есть ли дети у папки
+const hasChildren = (folderId) => {
+  const folderIndex = editModal.value.allFolders.findIndex(f => f.id === folderId)
+  if (folderIndex === -1) return false
+  const folder = editModal.value.allFolders[folderIndex]
+  const nextFolder = editModal.value.allFolders[folderIndex + 1]
+  return nextFolder && nextFolder.depth > folder.depth
+}
+
+// Загрузка дочерних элементов целевой папки для позиционирования
+const loadTargetFolderChildren = async (folderId) => {
+  try {
+    const children = await browser.bookmarks.getChildren(folderId)
+    // Фильтруем текущую закладку/папку из списка (если она там есть)
+    const filtered = children.filter(child => child.id !== editModal.value.bookmark?.id)
+    editModal.value.targetFolderChildren = filtered
+  } catch (e) {
+    editModal.value.targetFolderChildren = []
+  }
+}
+
+// Обработка выбора папки
+const selectTargetFolder = async (folderId) => {
+  if (folderId === editModal.value.bookmark?.id) return
+  
+  editModal.value.parentId = folderId
+  editModal.value.index = 0 // Сброс позиции при смене папки
+  
+  // Загружаем детей новой папки
+  await loadTargetFolderChildren(folderId)
+}
+
 const openEditModal = async () => {
   const bookmark = contextMenu.value.bookmark
   if (!bookmark) return
@@ -298,7 +366,8 @@ const openEditModal = async () => {
         allFoldersList.push({
           id: node.id,
           title: node.title || 'Без названия',
-          depth: depth
+          depth: depth,
+          hasChildren: false // Будет определено позже
         })
         if (node.children) {
           traverse(node.children, depth + 1)
@@ -308,9 +377,22 @@ const openEditModal = async () => {
   }
   traverse(tree)
   
+  // Определяем hasChildren для каждой папки
+  for (let i = 0; i < allFoldersList.length; i++) {
+    const current = allFoldersList[i]
+    const next = allFoldersList[i + 1]
+    current.hasChildren = next && next.depth > current.depth
+  }
+  
   // Получаем информацию о текущей закладке/папке
   const [bookmarkInfo] = await browser.bookmarks.get(bookmark.id)
   const siblings = await browser.bookmarks.getChildren(bookmarkInfo.parentId)
+  
+  // По умолчанию разворачиваем корневые папки
+  const expanded = new Set()
+  allFoldersList.forEach(f => {
+    if (f.depth === 0) expanded.add(f.id)
+  })
   
   editModal.value = {
     show: true,
@@ -322,7 +404,9 @@ const openEditModal = async () => {
     parentId: bookmarkInfo.parentId,
     index: bookmarkInfo.index,
     siblings: siblings,
-    allFolders: allFoldersList
+    allFolders: allFoldersList,
+    expandedFolders: expanded,
+    targetFolderChildren: siblings.filter(s => s.id !== bookmark.id)
   }
   
   hideContextMenu()
@@ -380,9 +464,8 @@ const handleEditFaviconFile = (event) => {
   }
 }
 
-const getPositionLabel = (index) => {
-  const labels = ['1st', '2nd', '3rd']
-  return labels[index] || `${index + 1}th`
+const getPositionLabel = (index, total) => {
+  return `${index + 1} из ${total}`
 }
 
 onMounted(() => {
@@ -401,22 +484,26 @@ onMounted(() => {
   <div class="app-wrapper">
     <div class="background-layer" :style="[{ filter: settings.backgroundType === 'image' ? `blur(${settings.backgroundBlur}px)` : 'none' }, appBackground]"></div>
     
-    <div class="app-container" :style="{
-      '--text-color': textColor,
-      '--text-color-secondary': textColorSecondary,
-      '--accent-color': accentColor,
-      '--card-bg': cardBg,
-      '--card-border': cardBorder,
-      '--card-blur': settings.cardBlur + 'px',
-      '--theme-accent': accentColor,
-      '--theme-primary': currentTheme.primary,
-      '--container-gap': containerGap,
-      '--folder-bg': folderSectionBg,
-      '--folder-border': folderSectionBorder,
-      '--folder-padding': folderSectionPadding,
-      '--root-bg': rootSectionBg,
-      '--root-border': rootSectionBorder
-    }">
+    <div 
+      class="app-container" 
+      :data-theme="settings.isLightTheme ? 'light' : 'dark'"
+      :style="{
+        '--text-color': textColor,
+        '--text-color-secondary': textColorSecondary,
+        '--accent-color': accentColor,
+        '--card-bg': cardBg,
+        '--card-border': cardBorder,
+        '--card-blur': settings.cardBlur + 'px',
+        '--theme-accent': accentColor,
+        '--theme-primary': currentTheme.primary,
+        '--container-gap': containerGap,
+        '--folder-bg': folderSectionBg,
+        '--folder-border': folderSectionBorder,
+        '--folder-padding': folderSectionPadding,
+        '--root-bg': rootSectionBg,
+        '--root-border': rootSectionBorder
+      }"
+    >
       
       <button class="settings-btn" @click.stop="showSettings = !showSettings">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -563,24 +650,80 @@ onMounted(() => {
                 <img v-if="editModal.faviconUrl" :src="editModal.faviconUrl" class="favicon-preview" @error="editModal.faviconUrl = ''">
               </div>
               
-              <!-- Родительская папка -->
+              <!-- Родительская папка - Древовидная структура со сворачиванием -->
               <div class="form-group">
                 <label>Вхождение в папку</label>
-                <select v-model="editModal.parentId" class="form-select">
-                  <option v-for="folder in editModal.allFolders" :key="folder.id" :value="folder.id">
-                    {{ '—'.repeat(folder.depth) }} {{ folder.title }}
-                  </option>
-                </select>
+                <div class="folder-hierarchy" @click.stop>
+                  <div 
+                    v-for="folder in getVisibleFolders" 
+                    :key="folder.id"
+                    :class="['folder-tree-item', { 
+                      selected: editModal.parentId === folder.id,
+                      current: folder.id === editModal.bookmark?.id 
+                    }]"
+                    :style="{ paddingLeft: (12 + folder.depth * 24) + 'px' }"
+                    @click="selectTargetFolder(folder.id)"
+                  >
+                    <!-- Кнопка сворачивания/разворачивания -->
+                    <button 
+                      v-if="folder.hasChildren" 
+                      class="expand-btn"
+                      :class="{ expanded: editModal.expandedFolders.has(folder.id) }"
+                      @click.stop="toggleFolderExpand(folder.id)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                        <polyline points="9 18 15 12 9 6"/>
+                      </svg>
+                    </button>
+                    <span v-else class="expand-placeholder"></span>
+                    
+                    <!-- Иконка папки -->
+                    <svg 
+                      class="folder-tree-icon" 
+                      width="18" 
+                      height="18" 
+                      viewBox="0 0 24 24" 
+                      fill="none" 
+                      :stroke="folder.id === editModal.parentId ? 'var(--accent-color)' : 'currentColor'" 
+                      stroke-width="2"
+                    >
+                      <path d="M2.75 8.623v7.379a4 4 0 0 0 4 4h10.5a4 4 0 0 0 4-4v-5.69a4 4 0 0 0-4-4H12M2.75 8.624V6.998a3 3 0 0 1 3-3h2.9a2.5 2.5 0 0 1 1.768.732L12 6.313m-9.25 2.31h5.904a2.5 2.5 0 0 0 1.768-.732L12 6.313"/>
+                    </svg>
+                    
+                    <span class="folder-tree-title" :class="{ 'root-folder': folder.depth === 0 }">{{ folder.title }}</span>
+                    
+                    <!-- Галочка выбранного элемента -->
+                    <svg 
+                      v-if="folder.id === editModal.parentId" 
+                      width="16" 
+                      height="16" 
+                      viewBox="0 0 24 24" 
+                      fill="none" 
+                      stroke="var(--accent-color)" 
+                      stroke-width="3"
+                      style="margin-left: auto;"
+                    >
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  </div>
+                </div>
               </div>
               
-              <!-- Позиция -->
+              <!-- Позиция - динамически обновляется при смене папки -->
               <div class="form-group">
                 <label>Позиция в папке</label>
                 <select v-model.number="editModal.index" class="form-select">
-                  <option v-for="(sibling, idx) in editModal.siblings" :key="sibling.id" :value="idx">
-                    {{ getPositionLabel(idx) }} {{ sibling.id === editModal.bookmark?.id ? '(текущая)' : sibling.title }}
+                  <option 
+                    v-for="n in editModal.targetFolderChildren.length + 1" 
+                    :key="n - 1" 
+                    :value="n - 1"
+                  >
+                    {{ getPositionLabel(n - 1, editModal.targetFolderChildren.length + 1) }}
+                    <template v-if="n - 1 < editModal.targetFolderChildren.length">
+                      — {{ editModal.targetFolderChildren[n - 1].title }}
+                    </template>
+                    <template v-else>— (в конец)</template>
                   </option>
-                  <option :value="editModal.siblings.length">{{ getPositionLabel(editModal.siblings.length) }} (в конец)</option>
                 </select>
               </div>
             </div>
@@ -784,21 +927,52 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x:
   letter-spacing: 0.5px;
 }
 
+/* Исправленные стили для форм с поддержкой темной темы */
 .form-input, .form-select {
   width: 100%;
   padding: 12px 16px;
-  background: rgba(255,255,255,0.05);
+  background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--card-border);
   border-radius: 10px;
   color: var(--text-color);
   font-size: 14px;
   outline: none;
   transition: all 0.2s;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
 }
 
 .form-input:focus, .form-select:focus {
   border-color: var(--accent-color);
-  background: rgba(255,255,255,0.08);
+  background: rgba(0, 0, 0, 0.3);
+}
+
+/* Светлая тема - светлый фон */
+.app-container[data-theme="light"] .form-input,
+.app-container[data-theme="light"] .form-select {
+  background: rgba(255, 255, 255, 0.8);
+  color: #1f2937;
+}
+
+.app-container[data-theme="light"] .form-input:focus,
+.app-container[data-theme="light"] .form-select:focus {
+  background: rgba(255, 255, 255, 0.95);
+}
+
+/* Стили для опций селекта - принудительно темные для контраста */
+.form-select option {
+  background: #1f2937;
+  color: #eaeaea;
+  padding: 8px;
+}
+
+/* Для светлой темы */
+.app-container[data-theme="light"] .form-select option {
+  background: #ffffff;
+  color: #1f2937;
 }
 
 .favicon-input-group {
@@ -876,6 +1050,122 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x:
 .btn-primary:hover {
   opacity: 0.9;
   transform: translateY(-1px);
+}
+
+/* Древовидная структура папок */
+.folder-hierarchy {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px 0;
+}
+
+.app-container[data-theme="light"] .folder-hierarchy {
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.folder-tree-item {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: var(--text-color);
+  border-left: 3px solid transparent;
+  margin: 2px 8px;
+  border-radius: 0 8px 8px 0;
+  min-height: 40px;
+}
+
+.folder-tree-item:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-left-color: var(--accent-color);
+}
+
+.app-container[data-theme="light"] .folder-tree-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.folder-tree-item.selected {
+  background: color-mix(in srgb, var(--accent-color) 20%, transparent);
+  border-left-color: var(--accent-color);
+}
+
+.folder-tree-item.current {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Кнопка сворачивания/разворачивания */
+.expand-btn {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: all 0.2s;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.expand-btn:hover {
+  background: rgba(255,255,255,0.1);
+  color: var(--text-color);
+}
+
+.expand-btn.expanded svg {
+  transform: rotate(90deg);
+}
+
+.expand-placeholder {
+  width: 20px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+.folder-tree-icon {
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.folder-tree-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 14px;
+}
+
+.folder-tree-title.root-folder {
+  font-weight: 600;
+  color: var(--accent-color);
+}
+
+/* Скроллбар для дерева */
+.folder-hierarchy::-webkit-scrollbar {
+  width: 8px;
+}
+
+.folder-hierarchy::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.folder-hierarchy::-webkit-scrollbar-thumb {
+  background: var(--card-border);
+  border-radius: 4px;
+}
+
+.folder-hierarchy::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-color);
 }
 
 .content { max-width: 1800px; margin: 0 auto; position: relative; z-index: 1; }

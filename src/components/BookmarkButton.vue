@@ -8,7 +8,7 @@ const props = defineProps({
   customFavicons: { type: Object, default: () => ({}) }
 })
 
-const emit = defineEmits(['contextmenu', 'update:favicon'])
+const emit = defineEmits(['contextmenu', 'update:favicon', 'folder-contextmenu'])
 const faviconUrl = ref(null)
 const hasFavicon = ref(true)
 const dominantColor = ref('#666666')
@@ -17,7 +17,6 @@ const isLoading = ref(true)
 
 const getCustomFavicon = () => props.customFavicons[props.bookmark.id] || null
 
-// Get two most frequent colors for gradient
 const getFaviconColors = async (url) => {
   if (!url) return { primary: props.theme.accent, secondary: props.theme.primary }
   try {
@@ -59,10 +58,8 @@ const getFaviconColors = async (url) => {
 
 const bookmarkGradient = computed(() => {
   if (props.isFolder) {
-    // More pronounced gradient for folders
     return `linear-gradient(135deg, ${props.theme.accent}40 0%, ${props.theme.primary}60 50%, rgba(123, 123, 123, 0.1) 100%)`
   }
-  // For bookmarks: gradient from most frequent to least frequent color
   if (hasFavicon.value && secondaryColor.value) {
     return `linear-gradient(135deg, ${dominantColor.value}35 0%, ${secondaryColor.value}25 100%)`
   }
@@ -219,7 +216,13 @@ const getFavicon = async () => {
 }
 
 const handleClick = () => { if (props.bookmark.url) browser.tabs.create({ url: props.bookmark.url }) }
-const handleContextMenu = (e) => { if (!props.isFolder) emit('contextmenu', e, props.bookmark) }
+const handleContextMenu = (e) => { 
+  if (props.isFolder) {
+    emit('folder-contextmenu', e, props.bookmark)
+  } else {
+    emit('contextmenu', e, props.bookmark) 
+  }
+}
 
 watch(() => props.customFavicons, (newVal, oldVal) => {
   if (newVal[props.bookmark.id] !== oldVal?.[props.bookmark.id]) {
@@ -282,7 +285,6 @@ onMounted(getFavicon)
   overflow: hidden;
 }
 
-/* Folder height is 38px */
 .bookmark-button.is-folder {
   border-radius: 10px;
   height: 33px;

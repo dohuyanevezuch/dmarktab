@@ -1,33 +1,22 @@
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import BookmarkButton from './BookmarkButton.vue'
 
 const props = defineProps({
-  folder: {
-    type: Object,
-    required: true
-  },
-  theme: {
-    type: Object,
-    default: () => ({ primary: '#7b2cbf', accent: '#a855f7' })
-  },
-  customFavicons: {
-    type: Object,
-    default: () => ({})
-  }
+  folder: { type: Object, required: true },
+  theme: { type: Object, default: () => ({ primary: '#7b2cbf', accent: '#a855f7' }) },
+  customFavicons: { type: Object, default: () => ({}) },
+  allFolders: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['bookmark-contextmenu'])
+const emit = defineEmits(['bookmark-contextmenu', 'folder-contextmenu'])
 
-const navigationStack = ref([{
-  id: props.folder.id,
-  title: '',
-  isRoot: true
-}])
-
+const navigationStack = ref([{ id: props.folder.id, title: '', isRoot: true }])
 const currentLevelBookmarks = ref([])
 const currentLevelFolders = ref([])
 const activeIndex = ref(0)
+const transitionDirection = ref('forward')
+const contentKey = ref(0)
 
 const loadFolderContent = async (folderId, stackIndex) => {
   try {
@@ -36,27 +25,30 @@ const loadFolderContent = async (folderId, stackIndex) => {
     currentLevelFolders.value = children.filter(item => !item.url)
     navigationStack.value = navigationStack.value.slice(0, stackIndex + 1)
     activeIndex.value = stackIndex
+    contentKey.value++
   } catch (err) {
     console.error('Error loading folder content:', err)
   }
 }
 
 const navigateToFolder = async (folder, levelIndex) => {
+  transitionDirection.value = 'forward'
   if (levelIndex < navigationStack.value.length - 1) {
     navigationStack.value = navigationStack.value.slice(0, levelIndex + 1)
     activeIndex.value = levelIndex
   } else {
-    navigationStack.value.push({
-      id: folder.id,
-      title: folder.title,
-      isRoot: false
-    })
+    navigationStack.value.push({ id: folder.id, title: folder.title, isRoot: false })
     activeIndex.value = navigationStack.value.length - 1
   }
   await loadFolderContent(folder.id, activeIndex.value)
 }
 
 const navigateToLevel = async (index) => {
+  if (index < activeIndex.value) {
+    transitionDirection.value = 'backward'
+  } else {
+    transitionDirection.value = 'forward'
+  }
   const stackItem = navigationStack.value[index]
   await loadFolderContent(stackItem.id, index)
 }
@@ -67,6 +59,10 @@ const showBreadcrumbs = computed(() => {
 
 const handleBookmarkContextMenu = (event, bookmark) => {
   emit('bookmark-contextmenu', event, bookmark)
+}
+
+const handleFolderContextMenu = (event, folder) => {
+  emit('folder-contextmenu', event, folder)
 }
 
 onMounted(async () => {
@@ -85,15 +81,8 @@ onMounted(async () => {
       </h2>
 
       <div v-if="showBreadcrumbs" class="breadcrumbs">
-        <span 
-          v-for="(navItem, index) in navigationStack" 
-          :key="navItem.id + '-' + index"
-          class="breadcrumbs-separator"
-        >
-          <span 
-            :class="['breadcrumbs-item', { active: index === activeIndex }]"
-            @click="navigateToLevel(index)"
-          >
+        <span v-for="(navItem, index) in navigationStack" :key="navItem.id + '-' + index" class="breadcrumbs-separator">
+          <span :class="['breadcrumbs-item', { active: index === activeIndex }]" @click="navigateToLevel(index)">
             <svg v-if="navItem.isRoot" width="14" height="14" viewBox="0 0 24 24" fill="none" :stroke="theme.accent" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
               <path d="M15.29 20.663h3.017a2.194 2.194 0 0 0 2.193-2.194v-6.454a3.3 3.3 0 0 0-1.13-2.48l-5.93-5.166a2.194 2.194 0 0 0-2.88 0L4.63 9.534a3.3 3.3 0 0 0-1.13 2.481v6.454c0 1.212.982 2.194 2.194 2.194h3.29m6.306 0v-6.581c0-.908-.736-1.645-1.645-1.645H10.63c-.909 0-1.645.737-1.645 1.645v6.581m6.306 0H8.984"/>
             </svg>
@@ -105,28 +94,36 @@ onMounted(async () => {
       <div class="section-divider" :style="{ background: theme.accent }"></div>
     </div>
 
-    <div v-if="currentLevelFolders.length > 0" class="bookmarks-grid">
-      <BookmarkButton 
-        v-for="subfolder in currentLevelFolders" 
-        :key="subfolder.id"
-        :bookmark="subfolder"
-        :is-folder="true"
-        :theme="theme"
-        @click="navigateToFolder(subfolder, navigationStack.length)"
-      />
-    </div>
+    <Transition 
+      :name="transitionDirection === 'forward' ? 'slide-forward' : 'slide-backward'"
+      mode="out-in"
+    >
+      <div :key="contentKey" class="content-wrapper">
+        <div v-if="currentLevelFolders.length > 0" class="bookmarks-grid folders-grid">
+          <BookmarkButton 
+            v-for="subfolder in currentLevelFolders" 
+            :key="subfolder.id"
+            :bookmark="subfolder"
+            :is-folder="true"
+            :theme="theme"
+            @click="navigateToFolder(subfolder, navigationStack.length)"
+            @folder-contextmenu="handleFolderContextMenu"
+          />
+        </div>
 
-    <div v-if="currentLevelBookmarks.length > 0" class="bookmarks-grid">
-      <BookmarkButton 
-        v-for="bookmark in currentLevelBookmarks" 
-        :key="bookmark.id"
-        :bookmark="bookmark"
-        :is-folder="false"
-        :theme="theme"
-        :custom-favicons="customFavicons"
-        @contextmenu="handleBookmarkContextMenu"
-      />
-    </div>
+        <div v-if="currentLevelBookmarks.length > 0" class="bookmarks-grid">
+          <BookmarkButton 
+            v-for="bookmark in currentLevelBookmarks" 
+            :key="bookmark.id"
+            :bookmark="bookmark"
+            :is-folder="false"
+            :theme="theme"
+            :custom-favicons="customFavicons"
+            @contextmenu="handleBookmarkContextMenu"
+          />
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -135,6 +132,7 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow: hidden;
 }
 .section-title-wrapper {
   display: flex;
@@ -189,9 +187,42 @@ onMounted(async () => {
   height: 1px;
   opacity: 0.4;
 }
+.content-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
 .bookmarks-grid {
   display: flex;
   flex-wrap: wrap;
   gap: 16px;
+}
+
+/* Slide Forward Animation (going deeper) */
+.slide-forward-enter-active,
+.slide-forward-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.slide-forward-enter-from {
+  opacity: 0;
+  transform: translateX(30px);
+}
+.slide-forward-leave-to {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+
+/* Slide Backward Animation (going back) */
+.slide-backward-enter-active,
+.slide-backward-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.slide-backward-enter-from {
+  opacity: 0;
+  transform: translateX(-30px);
+}
+.slide-backward-leave-to {
+  opacity: 0;
+  transform: translateX(30px);
 }
 </style>

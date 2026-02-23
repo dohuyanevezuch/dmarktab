@@ -25,13 +25,34 @@ const settings = ref({
   rootFolderId: null,
   hideEmptyFolders: false,
   compactMode: false,
-  hideDateTime: false  // New setting
+  hideDateTime: false
 })
 
 const customFavicons = ref({})
-const contextMenu = ref({ show: false, x: 0, y: 0, bookmark: null })
-const faviconUrlInput = ref('')
-const showFaviconUrlInput = ref(false)
+
+// Новое состояние для контекстного меню
+const contextMenu = ref({ 
+  show: false, 
+  x: 0, 
+  y: 0, 
+  bookmark: null,
+  isFolder: false
+})
+
+// Состояние для модального окна редактирования
+const editModal = ref({
+  show: false,
+  bookmark: null,
+  isFolder: false,
+  title: '',
+  url: '',
+  faviconUrl: '',
+  parentId: '',
+  index: 0,
+  siblings: [],
+  allFolders: []
+})
+
 const showSettings = ref(false)
 
 const themes = { 
@@ -135,12 +156,10 @@ const saveCustomFavicons = async () => {
   try {
     const faviconsToSave = JSON.parse(JSON.stringify(customFavicons.value))
     await browser.storage.local.set({ customFavicons: faviconsToSave })
-    console.log('Custom favicons saved:', Object.keys(faviconsToSave).length)
   } catch (err) { console.error('Error saving custom favicons:', err) }
 }
 
-watch(() => customFavicons.value, (newVal) => {
-  console.log('customFavicons changed:', Object.keys(newVal).length)
+watch(() => customFavicons.value, () => {
   saveCustomFavicons()
 }, { deep: true })
 
@@ -235,62 +254,146 @@ const toggleHideDateTime = () => {
   settings.value.hideDateTime = !settings.value.hideDateTime
 }
 
-const showContextMenu = (event, bookmark) => {
-  if (!bookmark.url) return
-  contextMenu.value = { show: true, x: event.clientX, y: event.clientY, bookmark: bookmark }
-  showFaviconUrlInput.value = false
-  faviconUrlInput.value = ''
+// Функции контекстного меню
+const showContextMenu = (event, bookmark, isFolder = false) => {
+  event.preventDefault()
+  contextMenu.value = { 
+    show: true, 
+    x: event.clientX, 
+    y: event.clientY, 
+    bookmark: bookmark,
+    isFolder: isFolder
+  }
 }
 
-const hideContextMenu = () => { contextMenu.value.show = false; showFaviconUrlInput.value = false }
+const hideContextMenu = () => { 
+  contextMenu.value.show = false 
+}
 
-const handleCustomFaviconUpload = (event) => {
+const openBookmark = () => {
+  if (contextMenu.value.bookmark?.url) { 
+    browser.tabs.create({ url: contextMenu.value.bookmark.url })
+    hideContextMenu()
+  }
+}
+
+const copyBookmarkUrl = () => {
+  if (contextMenu.value.bookmark?.url) { 
+    navigator.clipboard.writeText(contextMenu.value.bookmark.url)
+    hideContextMenu()
+  }
+}
+
+const openEditModal = async () => {
+  const bookmark = contextMenu.value.bookmark
+  if (!bookmark) return
+  
+  // Получаем все папки для выбора родительской
+  const tree = await browser.bookmarks.getTree()
+  const allFoldersList = []
+  
+  const traverse = (nodes, depth = 0) => {
+    for (const node of nodes) {
+      if (!node.url) {
+        allFoldersList.push({
+          id: node.id,
+          title: node.title || 'Без названия',
+          depth: depth
+        })
+        if (node.children) {
+          traverse(node.children, depth + 1)
+        }
+      }
+    }
+  }
+  traverse(tree)
+  
+  // Получаем информацию о текущей закладке/папке
+  const [bookmarkInfo] = await browser.bookmarks.get(bookmark.id)
+  const siblings = await browser.bookmarks.getChildren(bookmarkInfo.parentId)
+  
+  editModal.value = {
+    show: true,
+    bookmark: bookmark,
+    isFolder: contextMenu.value.isFolder,
+    title: bookmark.title || '',
+    url: bookmark.url || '',
+    faviconUrl: customFavicons.value[bookmark.id] || '',
+    parentId: bookmarkInfo.parentId,
+    index: bookmarkInfo.index,
+    siblings: siblings,
+    allFolders: allFoldersList
+  }
+  
+  hideContextMenu()
+}
+
+const closeEditModal = () => {
+  editModal.value.show = false
+}
+
+const saveBookmarkEdit = async () => {
+  try {
+    const { bookmark, title, url, faviconUrl, parentId, index, isFolder } = editModal.value
+    
+    // Обновляем заголовок и URL (если не папка)
+    if (isFolder) {
+      await browser.bookmarks.update(bookmark.id, { title })
+    } else {
+      await browser.bookmarks.update(bookmark.id, { title, url })
+    }
+    
+    // Обновляем favicon если есть
+    if (!isFolder && faviconUrl) {
+      const newFavicons = { ...customFavicons.value }
+      newFavicons[bookmark.id] = faviconUrl
+      customFavicons.value = newFavicons
+    } else if (!isFolder && !faviconUrl && customFavicons.value[bookmark.id]) {
+      const newFavicons = { ...customFavicons.value }
+      delete newFavicons[bookmark.id]
+      customFavicons.value = newFavicons
+    }
+    
+    // Перемещаем если изменилась папка или позиция
+    const [currentInfo] = await browser.bookmarks.get(bookmark.id)
+    if (currentInfo.parentId !== parentId || currentInfo.index !== index) {
+      await browser.bookmarks.move(bookmark.id, { parentId, index })
+    }
+    
+    // Перезагружаем контент
+    await loadRootContent()
+    closeEditModal()
+  } catch (err) {
+    console.error('Error saving bookmark:', err)
+    alert('Ошибка при сохранении: ' + err.message)
+  }
+}
+
+const handleEditFaviconFile = (event) => {
   const file = event.target.files[0]
-  if (file && contextMenu.value.bookmark) {
+  if (file) {
     const reader = new FileReader()
     reader.onload = (e) => {
-      const newFavicons = { ...customFavicons.value }
-      newFavicons[contextMenu.value.bookmark.id] = e.target.result
-      customFavicons.value = newFavicons
-      console.log('Added favicon for bookmark:', contextMenu.value.bookmark.id)
-      hideContextMenu()
+      editModal.value.faviconUrl = e.target.result
     }
     reader.readAsDataURL(file)
   }
 }
 
-const addFaviconFromUrl = () => {
-  if (faviconUrlInput.value && contextMenu.value.bookmark) {
-    const newFavicons = { ...customFavicons.value }
-    newFavicons[contextMenu.value.bookmark.id] = faviconUrlInput.value
-    customFavicons.value = newFavicons
-    console.log('Added favicon URL for bookmark:', contextMenu.value.bookmark.id)
-    hideContextMenu()
-  }
-}
-
-const removeCustomFavicon = () => {
-  if (contextMenu.value.bookmark) {
-    const newFavicons = { ...customFavicons.value }
-    delete newFavicons[contextMenu.value.bookmark.id]
-    customFavicons.value = newFavicons
-    hideContextMenu()
-  }
-}
-
-const openBookmarkInNewTab = () => {
-  if (contextMenu.value.bookmark?.url) { browser.tabs.create({ url: contextMenu.value.bookmark.url }); hideContextMenu() }
-}
-
-const copyBookmarkUrl = () => {
-  if (contextMenu.value.bookmark?.url) { navigator.clipboard.writeText(contextMenu.value.bookmark.url); hideContextMenu() }
+const getPositionLabel = (index) => {
+  const labels = ['1st', '2nd', '3rd']
+  return labels[index] || `${index + 1}th`
 }
 
 onMounted(() => {
   updateTime()
   setInterval(updateTime, 1000)
   loadSettings().then(() => { getAvailableFolders().then(() => { loadRootContent() }) })
-  document.addEventListener('click', hideContextMenu)
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.context-menu') && !e.target.closest('.edit-modal')) {
+      hideContextMenu()
+    }
+  })
 })
 </script>
 
@@ -313,7 +416,7 @@ onMounted(() => {
       '--folder-padding': folderSectionPadding,
       '--root-bg': rootSectionBg,
       '--root-border': rootSectionBorder
-    }" @click="hideContextMenu">
+    }">
       
       <button class="settings-btn" @click.stop="showSettings = !showSettings">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -342,7 +445,6 @@ onMounted(() => {
             </div>
           </div>
           
-          <!-- New toggle for hiding date/time -->
           <div class="setting-group">
             <label>Показ времени и даты</label>
             <div class="theme-toggle">
@@ -406,51 +508,92 @@ onMounted(() => {
         </div>
       </transition>
 
+      <!-- Контекстное меню -->
       <transition name="fade">
         <div v-if="contextMenu.show" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
-          <div class="context-menu-header">
-            <span class="context-menu-title">{{ contextMenu.bookmark?.title }}</span>
-          </div>
           <div class="context-menu-items">
-            <button class="context-menu-item" @click="openBookmarkInNewTab">
+            <button v-if="!contextMenu.isFolder" class="context-menu-item" @click="openBookmark">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
-              Открыть в новой вкладке
+              Открыть
             </button>
-            <button class="context-menu-item" @click="copyBookmarkUrl">
+            <button v-if="!contextMenu.isFolder" class="context-menu-item" @click="copyBookmarkUrl">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-              Копировать ссылку
+              Скопировать
             </button>
-            <div class="context-menu-divider"></div>
-            
-            <div v-if="showFaviconUrlInput" class="favicon-url-input">
-              <input type="text" v-model="faviconUrlInput" placeholder="URL иконки..." @keyup.enter="addFaviconFromUrl"/>
-              <div class="favicon-url-buttons">
-                <button @click="addFaviconFromUrl">Добавить</button>
-                <button @click="showFaviconUrlInput = false">Отмена</button>
-              </div>
-            </div>
-            
-            <button v-else class="context-menu-item" @click="showFaviconUrlInput = true">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-              Добавить favicon по ссылке
-            </button>
-            
-            <label class="context-menu-item">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
-              <span>Загрузить favicon файлом</span>
-              <input type="file" accept="image/*" @change="handleCustomFaviconUpload" style="display: none;"/>
-            </label>
-            
-            <button v-if="contextMenu.bookmark && customFavicons[contextMenu.bookmark.id]" class="context-menu-item danger" @click="removeCustomFavicon">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              Удалить кастомный favicon
+            <button class="context-menu-item" @click="openEditModal">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              Редактировать
             </button>
           </div>
         </div>
       </transition>
 
+      <!-- Модальное окно редактирования -->
+      <transition name="fade">
+        <div v-if="editModal.show" class="edit-modal-overlay" @click="closeEditModal">
+          <div class="edit-modal" @click.stop>
+            <div class="edit-modal-header">
+              <h3>{{ editModal.isFolder ? 'Редактировать папку' : 'Редактировать закладку' }}</h3>
+              <button class="close-btn" @click="closeEditModal">×</button>
+            </div>
+            
+            <div class="edit-modal-body">
+              <!-- Название -->
+              <div class="form-group">
+                <label>Название</label>
+                <input type="text" v-model="editModal.title" class="form-input" placeholder="Введите название...">
+              </div>
+              
+              <!-- URL (только для закладок) -->
+              <div v-if="!editModal.isFolder" class="form-group">
+                <label>Ссылка</label>
+                <input type="text" v-model="editModal.url" class="form-input" placeholder="https://...">
+              </div>
+              
+              <!-- Иконка (только для закладок) -->
+              <div v-if="!editModal.isFolder" class="form-group">
+                <label>Иконка</label>
+                <div class="favicon-input-group">
+                  <input type="text" v-model="editModal.faviconUrl" class="form-input" placeholder="URL иконки...">
+                  <label class="file-btn">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                    <input type="file" accept="image/*" @change="handleEditFaviconFile" style="display: none;">
+                  </label>
+                </div>
+                <img v-if="editModal.faviconUrl" :src="editModal.faviconUrl" class="favicon-preview" @error="editModal.faviconUrl = ''">
+              </div>
+              
+              <!-- Родительская папка -->
+              <div class="form-group">
+                <label>Вхождение в папку</label>
+                <select v-model="editModal.parentId" class="form-select">
+                  <option v-for="folder in editModal.allFolders" :key="folder.id" :value="folder.id">
+                    {{ '—'.repeat(folder.depth) }} {{ folder.title }}
+                  </option>
+                </select>
+              </div>
+              
+              <!-- Позиция -->
+              <div class="form-group">
+                <label>Позиция в папке</label>
+                <select v-model.number="editModal.index" class="form-select">
+                  <option v-for="(sibling, idx) in editModal.siblings" :key="sibling.id" :value="idx">
+                    {{ getPositionLabel(idx) }} {{ sibling.id === editModal.bookmark?.id ? '(текущая)' : sibling.title }}
+                  </option>
+                  <option :value="editModal.siblings.length">{{ getPositionLabel(editModal.siblings.length) }} (в конец)</option>
+                </select>
+              </div>
+            </div>
+            
+            <div class="edit-modal-footer">
+              <button class="btn-secondary" @click="closeEditModal">Отмена</button>
+              <button class="btn-primary" @click="saveBookmarkEdit">Сохранить</button>
+            </div>
+          </div>
+        </div>
+      </transition>
+
       <div class="content" :style="{ maxWidth: containerWidth + 'px' }">
-        <!-- Time section with v-if -->
         <div v-if="!settings.hideDateTime" class="time-section">
           <h1 class="time" :style="{ textShadow: `0 0 40px ${currentTheme.accent}40` }">{{ currentTime }}</h1>
           <p class="date">{{ currentDate }}</p>
@@ -467,10 +610,26 @@ onMounted(() => {
               <div class="section-divider" :style="{ background: accentColor }"></div>
             </div>
             <div class="bookmarks-grid">
-              <BookmarkButton v-for="bookmark in rootBookmarks" :key="bookmark.id" :bookmark="bookmark" :is-folder="false" :theme="currentTheme" :custom-favicons="customFavicons" @contextmenu="showContextMenu"/>
+              <BookmarkButton 
+                v-for="bookmark in rootBookmarks" 
+                :key="bookmark.id" 
+                :bookmark="bookmark" 
+                :is-folder="false" 
+                :theme="currentTheme" 
+                :custom-favicons="customFavicons" 
+                @contextmenu="(e, b) => showContextMenu(e, b, false)"
+              />
             </div>
           </div>
-          <FolderSection v-for="folder in rootFolders" :key="folder.id" :folder="folder" :theme="currentTheme" :custom-favicons="customFavicons" @bookmark-contextmenu="showContextMenu"/>
+          <FolderSection 
+            v-for="folder in rootFolders" 
+            :key="folder.id" 
+            :folder="folder" 
+            :theme="currentTheme" 
+            :custom-favicons="customFavicons"
+            @bookmark-contextmenu="(e, b) => showContextMenu(e, b, false)"
+            @folder-contextmenu="(e, f) => showContextMenu(e, f, true)"
+          />
           <div v-if="rootBookmarks.length === 0 && rootFolders.length === 0" class="empty-state">
             <p>В этой папке нет закладок</p>
           </div>
@@ -512,19 +671,212 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x:
 .blur-slider::-webkit-slider-thumb, .width-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--accent-color); cursor: pointer; }
 .close-settings { width: 100%; padding: 12px; background: var(--accent-color); border: none; border-radius: 8px; color: #fff; font-weight: 500; cursor: pointer; }
 
-.context-menu { position: fixed; background: var(--card-bg); backdrop-filter: blur(20px); border-radius: 12px; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.4); z-index: 1000; min-width: 240px; }
-.context-menu-header { padding: 12px 16px; border-bottom: 1px solid var(--card-border); background: rgba(0,0,0,0.2); }
-.context-menu-title { font-size: 13px; font-weight: 600; color: var(--text-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.context-menu-items { padding: 8px; }
-.context-menu-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: none; background: transparent; color: var(--text-color); font-size: 13px; cursor: pointer; border-radius: 8px; }
-.context-menu-item:hover { background: var(--accent-color); color: #fff; }
-.context-menu-item.danger:hover { background: #ef4444; }
-.context-menu-divider { height: 1px; background: var(--card-border); margin: 8px 0; }
-.favicon-url-input { padding: 8px; }
-.favicon-url-input input { width: 100%; padding: 8px 12px; border: 1px solid var(--card-border); border-radius: 6px; background: rgba(255,255,255,0.05); color: var(--text-color); margin-bottom: 8px; }
-.favicon-url-buttons { display: flex; gap: 8px; }
-.favicon-url-buttons button { flex: 1; padding: 6px; border: none; border-radius: 6px; background: var(--accent-color); color: white; cursor: pointer; font-size: 12px; }
-.favicon-url-buttons button:last-child { background: rgba(255,255,255,0.1); }
+/* Контекстное меню */
+.context-menu { 
+  position: fixed; 
+  background: var(--card-bg); 
+  backdrop-filter: blur(20px); 
+  border-radius: 12px; 
+  border: 1px solid var(--card-border); 
+  box-shadow: 0 10px 40px rgba(0,0,0,0.4); 
+  z-index: 1000; 
+  min-width: 180px;
+  overflow: hidden;
+}
+.context-menu-items { padding: 6px; }
+.context-menu-item { 
+  display: flex; 
+  align-items: center; 
+  gap: 10px; 
+  width: 100%; 
+  padding: 10px 12px; 
+  border: none; 
+  background: transparent; 
+  color: var(--text-color); 
+  font-size: 14px; 
+  cursor: pointer; 
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+.context-menu-item:hover { 
+  background: var(--accent-color); 
+  color: #fff; 
+}
+
+/* Модальное окно редактирования */
+.edit-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(5px);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.edit-modal {
+  background: var(--card-bg);
+  backdrop-filter: blur(20px);
+  border-radius: 16px;
+  border: 1px solid var(--card-border);
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.edit-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.edit-modal-header h3 {
+  color: var(--text-color);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.close-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: none;
+  background: rgba(255,255,255,0.1);
+  color: var(--text-color);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.close-btn:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+.edit-modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  max-height: 60vh;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.form-group label {
+  display: block;
+  color: var(--accent-color);
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-input, .form-select {
+  width: 100%;
+  padding: 12px 16px;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  color: var(--text-color);
+  font-size: 14px;
+  outline: none;
+  transition: all 0.2s;
+}
+
+.form-input:focus, .form-select:focus {
+  border-color: var(--accent-color);
+  background: rgba(255,255,255,0.08);
+}
+
+.favicon-input-group {
+  display: flex;
+  gap: 8px;
+}
+
+.favicon-input-group .form-input {
+  flex: 1;
+}
+
+.file-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  background: rgba(255,255,255,0.05);
+  color: var(--text-color);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+}
+
+.file-btn:hover {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: #fff;
+}
+
+.favicon-preview {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  margin-top: 12px;
+  object-fit: contain;
+  border: 1px solid var(--card-border);
+  padding: 4px;
+  background: rgba(255,255,255,0.05);
+}
+
+.edit-modal-footer {
+  display: flex;
+  gap: 12px;
+  padding: 20px 24px;
+  border-top: 1px solid var(--card-border);
+  justify-content: flex-end;
+}
+
+.btn-secondary, .btn-primary {
+  padding: 12px 24px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+}
+
+.btn-secondary {
+  background: rgba(255,255,255,0.1);
+  color: var(--text-color);
+}
+
+.btn-secondary:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+.btn-primary {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
 
 .content { max-width: 1800px; margin: 0 auto; position: relative; z-index: 1; }
 .time-section { text-align: center; margin-bottom: 20px; }

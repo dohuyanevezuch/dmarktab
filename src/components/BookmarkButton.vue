@@ -276,7 +276,7 @@ onMounted(getFavicon)
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   width: 220px;
-  height: 46px;
+  height: 40px;
   backdrop-filter: blur(var(--card-blur, 10px));
   position: relative;
   overflow: hidden;
@@ -284,6 +284,7 @@ onMounted(getFavicon)
 
 /* Folder height is 38px */
 .bookmark-button.is-folder {
+  border-radius: 10px;
   height: 33px;
   padding: 8px 14px;
   border: 1px solid color-mix(in srgb, var(--theme-accent, #a855f7) 40%, transparent);

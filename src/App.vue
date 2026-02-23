@@ -24,7 +24,8 @@ const settings = ref({
   isLightTheme: false,
   rootFolderId: null,
   hideEmptyFolders: false,
-  compactMode: false  // Новый параметр: компактный режим
+  compactMode: false,
+  hideDateTime: false  // New setting
 })
 
 const customFavicons = ref({})
@@ -90,7 +91,6 @@ const cardBorder = computed(() => settings.value.isLightTheme
   ? 'rgba(31, 41, 55, 0.15)' 
   : 'rgba(255, 255, 255, 0.08)')
 
-// Computed свойства для компактного режима
 const containerGap = computed(() => settings.value.compactMode ? '0px' : '10px')
 const folderSectionBg = computed(() => settings.value.compactMode ? 'transparent' : 'rgba(255,255,255,0.03)')
 const folderSectionBorder = computed(() => settings.value.compactMode ? 'none' : '1px solid var(--card-border)')
@@ -227,9 +227,12 @@ const toggleHideEmptyFolders = async () => {
   await loadRootContent()
 }
 
-// Новый тумблер компактного режима
 const toggleCompactMode = () => {
   settings.value.compactMode = !settings.value.compactMode
+}
+
+const toggleHideDateTime = () => {
+  settings.value.hideDateTime = !settings.value.hideDateTime
 }
 
 const showContextMenu = (event, bookmark) => {
@@ -331,12 +334,20 @@ onMounted(() => {
             </div>
           </div>
           
-          <!-- Новый тумблер режима отображения -->
           <div class="setting-group">
             <label>Режим отображения</label>
             <div class="theme-toggle">
               <button :class="['theme-toggle-btn', { active: !settings.compactMode }]" @click="toggleCompactMode">Обычный</button>
               <button :class="['theme-toggle-btn', { active: settings.compactMode }]" @click="toggleCompactMode">Компактный</button>
+            </div>
+          </div>
+          
+          <!-- New toggle for hiding date/time -->
+          <div class="setting-group">
+            <label>Показ времени и даты</label>
+            <div class="theme-toggle">
+              <button :class="['theme-toggle-btn', { active: !settings.hideDateTime }]" @click="toggleHideDateTime">Показать</button>
+              <button :class="['theme-toggle-btn', { active: settings.hideDateTime }]" @click="toggleHideDateTime">Скрыть</button>
             </div>
           </div>
           
@@ -439,7 +450,8 @@ onMounted(() => {
       </transition>
 
       <div class="content" :style="{ maxWidth: containerWidth + 'px' }">
-        <div class="time-section">
+        <!-- Time section with v-if -->
+        <div v-if="!settings.hideDateTime" class="time-section">
           <h1 class="time" :style="{ textShadow: `0 0 40px ${currentTheme.accent}40` }">{{ currentTime }}</h1>
           <p class="date">{{ currentDate }}</p>
         </div>
@@ -521,7 +533,6 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x:
 .loading, .error { text-align: center; color: var(--text-color); font-size: 18px; }
 .error { color: #ef4444; }
 
-/* Изменения для поддержки компактного режима через CSS-переменные */
 .bookmarks-container { 
   display: flex; 
   flex-direction: column; 
@@ -542,7 +553,6 @@ body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x:
 
 .root-section { 
   background: var(--root-bg, color-mix(in srgb, var(--theme-accent, #a855f7) 8%, transparent)); 
-  /* border-color: var(--root-border, 1px solid color-mix(in srgb, var(--theme-accent, #a855f7) 20%, transparent));  */
   transition: all 0.3s ease;
 }
 
